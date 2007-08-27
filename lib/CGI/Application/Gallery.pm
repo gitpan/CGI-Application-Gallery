@@ -1,35 +1,71 @@
 package CGI::Application::Gallery;
+use strict;
+use warnings;
+
 use base 'CGI::Application';
 use CGI::Application::Plugin::Session;
 use CGI::Application::Plugin::Forward;
 use CGI::Application::Plugin::AutoRunmode;
 use CGI::Application::Plugin::Feedback ':all';
-use strict;
 use Carp;
 use Data::Page;
 use File::PathInfo::Ext;
 use File::Path;
-use warnings;
 use CGI::Application::Plugin::Stream 'stream_file';
-use Image::Magick::Thumbnail;
-use Smart::Comments '###';
-our $VERSION = sprintf "%d.%02d", q$Revision: 1.2 $ =~ /(\d+)/g;
-my $DEBUG = 1;
-sub DEBUG : lvalue { $DEBUG }
+use CGI::Application::Plugin::Thumbnail ':all';
+use CGI::Application::Plugin::TmplInnerOuter;
+
+use LEOCHARRE::DEBUG;
+our $VERSION = sprintf "%d.%02d", q$Revision: 1.4 $ =~ /(\d+)/g;
+
+
+
+
+
 
 sub setup {
 	my $self = shift;
 	$self->start_mode('browse');
 	$self->mode_param('rm');
-	
-
 }
 
 sub cgiapp_postrun {
 	my $self = shift;
-	(printf STDERR "===== RM %s ==================\n", $self->get_current_runmode) if DEBUG;
+   
+   debug("===== RUNMODE %s ==================\n", $self->get_current_runmode);
+   return 1;     
 }
 
+
+
+=pod
+
+=head1 NAME
+
+CGI::Application::Gallery - image gallery module 
+
+=head1 DESCRIPTION
+
+I must have coded fifty different image gallery scripts in the last 10 years.
+I think doing this in CGI::Application has staying power.
+
+This is in development- but is fully usable. At this point, you will have to view/isnpect or use
+the included browse.html and view.html HTML::Template files.
+
+=head2 PROS
+
+Uses cgi application, HTML::Template, etc. Uses a lot of code from stable, good packages.
+Presentation is TOTALLY separated from back-end, and from content.
+You can make this look like whatever you want, pixel precision art of minimal text layout.
+
+Simple drop in, you create your hirerarchy of stuff, and the program takes care of the rest.
+
+=head2 CONS
+
+Uses cgi application, HTML::Template, etc. Uses a lot of code from stable, good packages.
+Could be clunky- doesn't feel like it, but.. I know these packages have a lot of stuff utterly unused
+here.
+If you don't have root access, you will need to know how to use cpan command line.
 
 =head1 RUNMODES
 
@@ -37,6 +73,42 @@ sub cgiapp_postrun {
 
 sub browse : Runmode {
 	my $self = shift;
+
+   $self->_set_tmpl_default(q{
+	<TMPL_IF CURRENT_PAGE>
+	<div>
+	<p><TMPL_IF PREVIOUS_PAGE><a href="?rm=browse&current_page=<TMPL_VAR PREVIOUS_PAGE>">previous page</a> : </TMPL_IF>
+	<TMPL_IF CURRENT_PAGE>Page <TMPL_VAR CURRENT_PAGE></TMPL_IF>
+	<TMPL_IF NEXT_PAGE> : <a href="?rm=browse&current_page=<TMPL_VAR NEXT_PAGE>">next page</a></TMPL_IF>
+	</p>
+	<p>
+	<a href="?entries_per_page=5">[5pp]</a> : 
+	<a href="?entries_per_page=10">[10pp]</a> : 
+	<a href="?entries_per_page=25">[25pp]</a> 
+	</p>
+	</div>
+	</TMPL_IF>	
+	
+	<div>	
+	<table cellspacing="0" cellpadding="4" width="100%">
+	<tr>
+	<TMPL_LOOP NAME="LS"> <td><a href="?rm=view&rel_path=<TMPL_VAR REL_PATH>"><img src="?rm=thumbnail&rel_path=<TMPL_VAR REL_PATH>"></a></td>
+	<TMPL_IF CLOSEROW></tr>
+	<tr>
+	</TMPL_IF>
+	</TMPL_LOOP>
+	</tr></table>
+	
+	<div>
+	<h5>Directories</h5>
+	<ul>
+	<TMPL_IF REL_BACK><li><a href="?rm=browse&rel_path=<TMPL_VAR REL_BACK>">Parent Directory</a></li></TMPL_IF>
+	<TMPL_LOOP NAME="LSD">
+	<li><a href="?rm=browse&rel_path=<TMPL_VAR REL_PATH>"><TMPL_VAR FILENAME></a></li>
+	</TMPL_LOOP>
+	</ul>
+	</div>});
+
 
 	
 	my @entries = $self->pager->splice($self->lsfa);
@@ -92,160 +164,213 @@ sub browse : Runmode {
 	}
 
 
-	$self->tmpl->param( LS => $loop );
-	$self->tmpl->param( LSD => $loopd);
+	$self->_set_vars( 
+      LS => $loop,
+	   LSD => $loopd,
+   );
 
 	if ( $self->pager->last_page > 1 ) { # if we need paging.
-		$self->tmpl->param( ENTRIES_PER_PAGE=> $self->pager->entries_per_page );	
-		$self->tmpl->param( PREVIOUS_PAGE =>	$self->pager->previous_page );
-		$self->tmpl->param( CURRENT_PAGE =>		$self->pager->current_page );
-		$self->tmpl->param( NEXT_PAGE =>			$self->pager->next_page );	
-		if (DEBUG){
-			printf STDERR "perpage[%s] prev [%s] curr [%s] next[%s]\n", 
-				$self->pager->entries_per_page, $self->pager->previous_page, $self->pager->current_page, $self->pager->next_page ;
-		}	
+   
+		$self->_set_vars( 
+         ENTRIES_PER_PAGE=> $self->pager->entries_per_page,
+		   PREVIOUS_PAGE =>	$self->pager->previous_page,
+         CURRENT_PAGE =>		$self->pager->current_page,
+		   NEXT_PAGE =>			$self->pager->next_page,	
+      );
+      
+	 #    debug( sprintf "perpage[%s] prev [%s] curr [%s] next[%s]\n", $self->pager->entries_per_page, $self->pager->previous_page, $self->pager->current_page, $self->pager->next_page );
+	   $self->_debug_vars if DEBUG;		
 	}	
 
-	$self->tmpl->param( rel_path => '/'.$self->cwr->rel_path );
+	$self->_set_vars( rel_path => '/'.$self->cwr->rel_path );
 
 	unless( $self->cwr->is_DOCUMENT_ROOT ){ # TODO this could be better, should lock into gallery space.. ??
-		$self->tmpl->param( rel_back => '/'.$self->cwr->rel_loc ); 
+		$self->_set_vars( rel_back => '/'.$self->cwr->rel_loc ); 
 	
 	}
 	
-	return $self->tmpl->output;
+	return $self->tmpl_output;
 }
+
 
 
 sub view : Runmode {
 	my $self = shift;
 
-	$self->tmpl->param( rel_medium => '?rm=medium&rel_path=/'.$self->cwr->rel_path ); # if they want to use it.
-	$self->tmpl->param( rel_path => '/'.$self->cwr->rel_path );
-	$self->tmpl->param( rel_back =>'?rm=browse&rel_path=/'.$self->cwr->rel_loc ); 
-	
-	return $self->tmpl->output;
+   $self->_set_tmpl_default(q{
+      <p><a href="<TMPL_VAR REL_BACK>">back</a></p>
+      <h1><TMPL_VAR REL_PATH></h1>
+      <p><img src="?rm=thumbnail&rel_path=<TMPL_VAR REL_PATH>&thumbnail_restriction=350x350"></p>
+      <p><a href="<TMPL_VAR REL_PATH>">full view</p>      
+   });  
+
+	$self->_set_vars(
+	   rel_path => '/'.$self->cwr->rel_path,
+      rel_back => '?rm=browse&rel_path=/'.$self->cwr->rel_loc,
+   );
+   
+	return $self->tmpl_output;
 }
+
+sub CGI::Application::Plugin::TmplInerOuter::tmpl_output {
+   my $self = shift;
+   $self->_set_tmpl_default(q{
+   <html>
+   <body>
+   <div>
+   <TMPL_LOOP FEEDBACK>
+   <p><small><TMPL_VAR FEEDBACK></small</p>
+   </TMPL_LOOP>
+   </div>
+   
+   <div>
+   <TMPL_VAR BODY>
+   </div>
+   </body>
+   </html>},'main.html');
+
+   
+   $self->_set_vars( FEEDBACK => $self->get_feedback_prepped );
+   
+   $self->_feed_vars_all;
+   $self->_feed_merge;
+   return $self->_tmpl_outer->output;
+}
+
+=head1 LOOK AND FEEL
+
+All templates are provided hard coded.
+You can override the look and feel simply by creating templates on disk.
+The are all L<HTML::Template> objects.
+This is done via L<CGI::Appplication::Plugin::TmplInnerOuter>
+
+=head2 OVERRIDING MAIN TEMPLATE
+
+The main template is :
+
+   <html>
+   <body>
+   <div>
+   <TMPL_LOOP FEEDBACK>
+   <p><small><TMPL_VAR FEEDBACK></small</p>
+   </TMPL_LOOP>
+   </div>
+   
+   <div>
+   <TMPL_VAR BODY>
+   </div>
+   </body>
+   </html>
+
+If you create a main.html file with at least the template variable <TMPL_VAR BODY>, it will override the hard coded one 
+shown above.
+
+This may be enough for your customizing needs. 
+If you want more read on..
+
+
+
+=head2 OVERRIDING VIEW TEMPLATE
+
+When you click to see medium view, the 'view' runmode.. the template you want to create will be called 'view.html'.
+
+It shoudl contain something like:
+
+ <p><a href="<TMPL_VAR REL_BACK>">back</a></p>
+ <h1><TMPL_VAR REL_PATH></h1>
+ <p><img src="?rm=thumbnail&rel_path=<TMPL_VAR REL_PATH>&thumbnail_restriction=350x350"></p>
+ <p><a href="<TMPL_VAR REL_PATH>">full view</p> 
+
+Shown above is default template.
+Obviously the deafault is seen there as 350x350, if you want your view to be 500x500, just change the text in your
+template. IT'S THAT EASY! Bless HTML::Template!!!!!!
+
+You notice this template has no html header and footer.
+That's beacuse it is inserted into the <TMPL_VAR BODY> tag of main.
+
+
+
+=head2 OVERRIDING BROWSE TEMPLATE
+
+
+This one is more complex. Simply create a browse.html template file and place this in it:
+
+   <!-- begin pager -->
+	<TMPL_IF CURRENT_PAGE>
+	<div>
+	<p><TMPL_IF PREVIOUS_PAGE><a href="?rm=browse&current_page=<TMPL_VAR PREVIOUS_PAGE>">previous page</a> : </TMPL_IF>
+	<TMPL_IF CURRENT_PAGE>Page <TMPL_VAR CURRENT_PAGE></TMPL_IF>
+	<TMPL_IF NEXT_PAGE> : <a href="?rm=browse&current_page=<TMPL_VAR NEXT_PAGE>">next page</a></TMPL_IF>
+	</p>
+	<p>
+	<a href="?entries_per_page=5">[5pp]</a> : 
+	<a href="?entries_per_page=10">[10pp]</a> : 
+	<a href="?entries_per_page=25">[25pp]</a> 
+	</p>
+	</div>
+	</TMPL_IF>	
+   <!-- end pager -->
+	
+
+   <!--begin thumbnails -->
+	<div>	
+	<table cellspacing="0" cellpadding="4" width="100%">
+	<tr>
+	<TMPL_LOOP NAME="LS"> <td><a href="?rm=view&rel_path=<TMPL_VAR REL_PATH>"><img src="?rm=thumbnail&rel_path=<TMPL_VAR REL_PATH>"></a></td>
+	<TMPL_IF CLOSEROW></tr>
+	<tr>
+	</TMPL_IF>
+	</TMPL_LOOP>
+	</tr></table>
+   <!-- end thumbnails -->
+
+
+   <!-- beign subdirs -->	
+	<div>
+	<h5>Directories</h5>
+	<ul>
+	<TMPL_IF REL_BACK><li><a href="?rm=browse&rel_path=<TMPL_VAR REL_BACK>">Parent Directory</a></li></TMPL_IF>
+	<TMPL_LOOP NAME="LSD">
+	<li><a href="?rm=browse&rel_path=<TMPL_VAR REL_PATH>"><TMPL_VAR FILENAME></a></li>
+	</TMPL_LOOP>
+	</ul>
+	</div>
+   <!-- end subdirs -->
+
+=head2 WHERE SHOULD main.html view.html AND browse.html GO?
+
+When you start your app:
+
+   
+   use CGI::Application::Gallery;
+
+   my $g = new CGI::Application::Gallery( 
+      TMPL_PATH => 'tmpl/',
+   );
+   $g->run;
+
+
+
+
+=cut
+
+
+
+
 
 sub error : Runmode {}
 
 
 
-sub medium : Runmode {
-	my $self = shift;
-
-	# setup
-	$self->param('rel_path_medium') or $self->param('rel_path_medium', '/.medium'); 	
-	$self->param('medium_restriction') or $self->param('medium_restriction', '400x400');
-
-
-	# is there a path to what image?
-	$self->query->param('rel_path') or 
-		carp "medium runmode: no rel path" and return;
-
-
-	# the image we want thumb for
-	my $abs_original = $ENV{DOCUMENT_ROOT}.'/'.$self->query->param('rel_path');
-	
-	
-	# is that image there?	
-   -f $abs_original 
-      or carp "medium runmode: image [$abs_original] is not there, cant make medium" 
-      and return;
-	
-	
-	# where do we store thumbnails?
-   my $abs_mediums = $ENV{DOCUMENT_ROOT}.'/'.$self->param('rel_path_medium');	
-	   	
-			
-	# where should the thumbnail be?
-   my $abs_medium = "$abs_mediums/$abs_original"; 
-	
-	
-	# if the thumbnail is not there, make it.
-   unless( -f $abs_medium){
-
-		-d $abs_mediums or mkdir $abs_mediums or die("thumbnail runmode: can't mkdir[$abs_mediums], $!");
-	
-      my $abs_medium_loc = $abs_medium; # absolute thumbnail location
-      $abs_medium_loc=~s/\/[^\/]+$// or die("thumbnail runmode: regex problem with [$abs_medium_loc]");
-
-      -d $abs_medium_loc
-         or File::Path::mkpath($abs_medium_loc) 
-         or die("medium runmode: cant make destination dir for thumb [$abs_medium_loc]");
-      
-      # make thumb
-      my $img = new Image::Magick;
-      $img->Read($abs_original);
-      my ($thumb,$x,$y) = Image::Magick::Thumbnail::create($img,$self->param('medium_restriction'));
-		$thumb->Set(compression => '8'); # ?????
-      $thumb->Write($abs_medium);
-   }   
-
-
-	# ok, send it   
-   $self->stream_file( $abs_medium )
-      or carp "medium runmode: could not stream medium [$abs_medium]";
-   return;
-}
-
 
 sub thumbnail : Runmode {
-	my $self = shift;
+	my $self = shift; 
+  
+   $self->get_abs_image('rel_path') or return;      
+   $self->abs_thumbnail or return;    
+   $self->thumbnail_header_add;
 
-	# setup
-	$self->param('rel_path_thumbnails') or $self->param('rel_path_thumbnails', '/.thumbnails'); 	
-	$self->param('thumbnails_restriction') or $self->param('thumbnails_restriction', '100x100');
-
-
-	# is there a path to what image?
-	$self->query->param('rel_path') or 
-		carp "thumbnail runmode: no rel path" and return;
-
-
-	# the image we want thumb for
-	my $abs_original = $ENV{DOCUMENT_ROOT}.'/'.$self->query->param('rel_path');
-	
-	
-	# is that image there?	
-   -f $abs_original 
-      or carp "thumbnail runmode: image [$abs_original] is not there, cant make thumb" 
-      and return;
-	
-	
-	# where do we store thumbnails?
-   my $abs_thumbs = $ENV{DOCUMENT_ROOT}.'/'.$self->param('rel_path_thumbnails');	
-	   	
-			
-	# where should the thumbnail be?
-   my $abs_thumb = "$abs_thumbs/$abs_original"; 
-	
-	
-	# if the thumbnail is not there, make it.
-   unless( -f $abs_thumb){
-
-		-d $abs_thumbs or mkdir $abs_thumbs or die("thumbnail runmode: can't mkdir[$abs_thumbs], $!");
-	
-      my $abs_thumb_loc = $abs_thumb; # absolute thumbnail location
-      $abs_thumb_loc=~s/\/[^\/]+$// or die("thumbnail runmode: regex problem with [$abs_thumb_loc]");
-
-      -d $abs_thumb_loc
-         or File::Path::mkpath($abs_thumb_loc) 
-         or die("thumbnail runmode: cant make destination dir for thumb [$abs_thumb_loc]");
-      
-      # make thumb
-      my $img = new Image::Magick;
-      $img->Read($abs_original);
-      my ($thumb,$x,$y) = Image::Magick::Thumbnail::create($img,$self->param('thumbnails_restriction'));
-		$thumb->Quantize(colorspace => 'gray'); # ???????
-		$thumb->Set(compression => '8');
-      $thumb->Write($abs_thumb);
-   }   
-
-
-	# ok, send it   
-   $self->stream_file( $abs_thumb )
-      or carp "thumbnail runmode: could not stream thumb [$abs_thumb]";
+   $self->stream_file( $self->abs_thumbnail ) or warn("thumbnail runmode: could not stream thumb ".$self->abs_thumbnail);
    return;
 }
 
@@ -260,95 +385,106 @@ view a single image
 =head2 thumbnail()
 
 needs in query string= ?rm=thumbnail&rel_path=/gallery/1.jpg&restriction=40x40
+Please see CGI::Application::Plugin::Thumbnail
+
 
 
 =head1 METHODS
 
-
 =head2 new()
-
 
  my $g = new CGI::Application::Gallery( 
 	PARAMS => { 
 		rel_path_default => '/',
-		rel_path_thumbnails => '/.thumbnails',
-		thumbnails_restriction => '100x100',
 		entries_per_page_min => 4,
 		entries_per_page_max => 100,
-		entries_per_page_default => 10,
-	}
+		entries_per_page_default => 10,		
+	},
  );
 
 Shown are the default parameters.
 
-
-			
 =cut
 
-sub tmpl {
-	my $self = shift;
-	unless ( defined $self->{tmpl} ){
 
-		my $tmpl = $self->load_tmpl(undef, die_on_bad_params => 0 );
-		$self->{tmpl} = $tmpl;
 
-		#my $vars = {		
-		#};
 
-		#for( keys %$vars){ 
-	#		print STDERR __PACKAGE__."::tmpl() $_ : $$vars{$_}\n" if DEBUG;
-#			$self->{tmpl}->param( $_ => $vars->{$_} ); 		
-#		}
-		
-	}
-	return $self->{tmpl};
-}
 
 sub cwr {
 	my $self = shift;
 
-	unless( $self->{cwr} ){	
+	unless( defined $self->{cwr} and $self->{cwr} ){	
 
+   
+         $self->_cwr_from_query or          
+         $self->_cwr_from_session or 
+         $self->_cwr_from_default or
+            confess('cant even set default gallery path');  
 
-		$self->param('rel_path_default') 
-			or $self->param('rel_path_default', '/'); # optionally set via constructor		
-	
-		# user choice present ?
-		if ( $self->query->param('rel_path') ){			
-			 
-			if (!$self->query->param('rel_path')) { # was user choice nothing? then clear it
-				$self->session->clear('_rel_path');
-			}
-			
-			else { # save choice in session
-				$self->session->param( _rel_path => $self->query->param('rel_path') );
-			}		
-		}
-		
-		unless( $self->session->param('_rel_path') ){ # if nothing in session, set default
-			$self->session->param('_rel_path' => $self->param('rel_path_default') );	
-		}		
-
-
-		# now attempt to set the path
-		if ( my $cwr = new File::PathInfo::Ext( $ENV{DOCUMENT_ROOT}.'/'. $self->session->param('_rel_path')) ){
-			$self->{cwr} = $cwr;			
-		}
-		else {
-			$self->feedback("Sorry, cannot view [". $self->session->param('_rel_path')."], this resource is not presently available.");
-			$self->{cwr} = _default($self);
-		}		
+      if ($self->get_current_runmode eq 'browse' and $self->cwr->is_file){
+          $self->_cwr_set_via_rel($self->cwr->rel_loc) or
+            $self->_cwr_from_from_default or confess('cant set default');
+      }
 
 	}
 	return $self->{cwr};
-
-	sub _default {
-		my $self = shift;
-		my $cwr = new File::PathInfo::Ext( $ENV{DOCUMENT_ROOT} .'/'.$self->param('rel_path_default') ) 
-			or croak("cannot set default rel path ".$self->param('rel_path_default') );
-		return $cwr;
-	}
 }
+
+
+sub _cwr_from_query {
+   my $self = shift;
+   my $rel = $self->query->param('rel_path');
+   defined $rel or return 0;
+
+   $self->_cwr_set_via_rel($rel) or return;
+   $self->session->param( '_rel_path' => $self->cwr->rel_path );      
+   return 1;   
+}
+
+sub _cwr_from_session {
+   my $self = shift;
+   my $rel = $self->session->param('_rel_path');
+   defined $rel or return;  
+   $self->_cwr_set_via_rel($rel) and return 1;
+   
+   # failed.. clear session 
+   $self->session->clear('_rel_path');
+   return 0;   
+}
+
+sub _cwr_from_default {
+	my $self = shift;
+   my $rel = $self->param('rel_path_default'); 
+   $rel ||= '/';
+   
+   $self->_cwr_set_via_rel($rel) or return 0;
+   return 1;
+}
+
+sub _cwr_set_via_rel {
+   my ($self, $rel) = @_; defined $rel or return;
+   my $cwr = new File::PathInfo::Ext( $ENV{DOCUMENT_ROOT}.'/'. $rel ) or return 0;
+   $self->{cwr} = $cwr;
+   return 1;
+   
+}
+
+
+
+=for later
+
+
+sub _gallery_docroot {
+   my $self = shift;
+   if ( defined $self->param('rel_path_default') and $self->param('rel_path_default') ){
+      return $ENV{DOCUMENT_ROOT}.'/'.$self->param('rel_path_default');
+   }
+   
+   return $ENV{DOCUMENT_ROOT};
+}
+
+=cut
+
 
 sub lsfa {
 	my $self = shift;
@@ -358,8 +494,6 @@ sub lsfa {
 	}
 	return $self->{lsfa};
 }
-
-
 
 sub entries_total {
 	my $self = shift;
@@ -443,8 +577,6 @@ sub _current_page { # ?
 }
 
 
-
-
 =head2 entries_total()
 
 =head2 entries_per_page()
@@ -459,7 +591,25 @@ returns Data::Page object
 
 returns abs paths of only image files in current dir
 
+=head1 PREREQUISITES
 
+CGI::Application
+CGI::Application::Plugin::Session
+CGI::Application::Plugin::Forward
+CGI::Application::Plugin::AutoRunmode
+CGI::Application::Plugin::Feedback
+CGI::Application::Plugin::Stream
+CGI::Application::Plugin::Thumbnail
+CGI::Application::Plugin::TmplInnerOuter
+File::PathInfo::Ext
+Data::Page
+File::Path
+Smart::Comments
+Carp
+
+=head1 BUGS
+
+Yes. Please email author.
 
 =head1 AUTHOR
 

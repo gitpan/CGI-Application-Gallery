@@ -1,7 +1,7 @@
 # http://module-build.sourceforge.net/META-spec.html
 #XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
 name:         CGI-Application-Gallery
-version:      1.02
+version:      1.04
 version_from: lib/CGI/Application/Gallery.pm
 installdirs:  site
 requires:
@@ -12,9 +12,11 @@ requires:
     CGI::Application::Plugin::Forward: 0
     CGI::Application::Plugin::Session: 0
     CGI::Application::Plugin::Stream: 0
+    CGI::Application::Plugin::Thumbnail: 0
+    CGI::Application::Plugin::TmplInnerOuter: 0
     Data::Page:                    0
     File::PathInfo::Ext:           1
-    Image::Magick::Thumbnail:      0
+    LEOCHARRE::DEBUG:              0
 
 distribution_type: module
 generated_by: ExtUtils::MakeMaker version 6.30
