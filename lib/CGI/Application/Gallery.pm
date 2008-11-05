@@ -1,11 +1,9 @@
 package CGI::Application::Gallery;
 use strict;
 use warnings;
-
 use base 'CGI::Application';
 use CGI::Application::Plugin::Session;
 use CGI::Application::Plugin::Forward;
-use CGI::Application::Plugin::AutoRunmode;
 use CGI::Application::Plugin::Feedback ':all';
 use Carp;
 use Data::Page;
@@ -13,28 +11,429 @@ use File::PathInfo::Ext;
 use File::Path;
 use CGI::Application::Plugin::Stream 'stream_file';
 use CGI::Application::Plugin::Thumbnail ':all';
-use CGI::Application::Plugin::TmplInnerOuter;
+#use CGI::Application::Plugin::TmplInnerOuter;
+use HTML::Template::Default 'get_tmpl';
 
 use LEOCHARRE::DEBUG;
-our $VERSION = sprintf "%d.%02d", q$Revision: 1.4 $ =~ /(\d+)/g;
-
-
-
-
+our $VERSION = sprintf "%d.%02d", q$Revision: 1.8 $ =~ /(\d+)/g;
 
 
 sub setup {
 	my $self = shift;
 	$self->start_mode('browse');
-	$self->mode_param('rm');
+   $self->run_modes([qw(browse view thumbnail download view_full)]);
 }
 
+
 sub cgiapp_postrun {
-	my $self = shift;
-   
-   debug("===== RUNMODE %s ==================\n", $self->get_current_runmode);
+	my $self = shift;   
+   printf STDERR "===== RUNMODE %s ==================\n", $self->get_current_runmode;
    return 1;     
 }
+
+
+sub browse { # runmode
+	my $self = shift;
+   if ($self->cwr->is_file){ 
+      return $self->forward('view');
+   }
+
+   my $default = q{
+	<TMPL_IF CURRENT_PAGE>
+	<div>
+	<p><TMPL_IF PREVIOUS_PAGE><a href="?current_page=<TMPL_VAR PREVIOUS_PAGE>">previous page</a> : </TMPL_IF>
+	<TMPL_IF CURRENT_PAGE>Page <TMPL_VAR CURRENT_PAGE></TMPL_IF>
+	<TMPL_IF NEXT_PAGE> : <a href="?current_page=<TMPL_VAR NEXT_PAGE>">next page</a></TMPL_IF>
+	</p>
+	<p>
+	<a href="?entries_per_page=5">[5pp]</a> : 
+	<a href="?entries_per_page=10">[10pp]</a> : 
+	<a href="?entries_per_page=25">[25pp]</a> 
+	</p>
+	</div>
+	</TMPL_IF>	
+	
+	<div>	
+	<table cellspacing="0" cellpadding="4" width="100%">
+	<tr>
+	<TMPL_LOOP NAME="LS"> <td><a href="?rel_path=<TMPL_VAR REL_PATH>"><img src="?rm=thumbnail&rel_path=<TMPL_VAR REL_PATH>"></a></td>
+	<TMPL_IF CLOSEROW></tr>
+	<tr>
+	</TMPL_IF>
+	</TMPL_LOOP>
+	</tr></table>
+	
+	<div>
+	<h5>Directories</h5>
+	<ul>
+	<TMPL_IF REL_BACK><li><a href="?rel_path=<TMPL_VAR REL_BACK>">Parent Directory</a></li></TMPL_IF>
+	<TMPL_LOOP NAME="LSD">
+	<li><a href="?rel_path=<TMPL_VAR REL_PATH>"><TMPL_VAR FILENAME></a></li>
+	</TMPL_LOOP>
+	</ul>
+	</div>};
+   
+   my $tmpl = get_tmpl('browse.html',\$default);
+
+
+	$tmpl->param( 
+      rel_path => $self->cwr->rel_path,
+      rel_back => $self->_rel_back,
+      LS       => $self->_files_loop,
+      LSD      => $self->_dirs_loop,
+   );
+
+   if( my $pp = $self->_pager_params ){
+      $tmpl->param(%$pp);
+   }
+
+   my $t = $self->tmpl_outer;
+   $t->param( BODY => $tmpl->output );   
+	return $t->output;
+}
+
+sub _pager_params {
+   my $self = shift;
+
+	if ( $self->pager->last_page > 1 ) { # if we need paging.   
+		return {
+         ENTRIES_PER_PAGE  => $self->pager->entries_per_page,
+		   PREVIOUS_PAGE     =>	$self->pager->previous_page,
+         CURRENT_PAGE      =>	$self->pager->current_page,
+		   NEXT_PAGE         =>	$self->pager->next_page,	
+      };      
+	}	
+   return;
+}
+
+# show parent link or not, return 0 if not
+sub _rel_back {
+   my $self = shift;
+   $self->_show_parent_link or return 0;
+   return '/'.$self->cwr->rel_loc ; 	
+}
+
+sub _files_loop {
+   my $self = shift;
+
+   $self->cwr->lsf_count or return [];
+	my @files_all  = grep { !/^\.|\/\./g } @{ $self->cwr->lsf } or return [];
+      
+   my $count = scalar @files_all;
+   debug("files all $count");
+
+   my @files = $self->pager->splice( \@files_all ) or die;   
+   my $loop = $self->_ls_tmpl_loop(\@files) or die;
+
+   return $loop;
+}
+
+sub _dirs_loop {
+   my $self = shift;
+   $self->cwr->lsd_count or return [];
+
+   my @dirs = grep { !/^\.|\/\./g } @{$self->cwr->lsd};
+   @dirs and scalar @dirs or return [];
+
+   my $loop = $self->_ls_tmpl_loop( \@dirs);
+   return $loop;
+}
+
+
+sub _ls_tmpl_loop {
+   my( $self, $ls ) = @_;   
+   ref $ls eq 'ARRAY' or confess;
+
+   my $base_rel_path = $self->cwr->rel_path;
+   debug("base rel path '$base_rel_path'");
+   
+
+   my @loop = ();
+
+	my $row = 3; # per row
+   my $cell= 0;
+
+	LS: for my $filename (@$ls){
+
+      $cell++;
+
+		my $rel_path = $base_rel_path ."/$filename";
+		
+      my $closerow = 0;
+		if ( $cell == $row ){
+         $cell     = 0;
+         $closerow = 1;
+      }
+		
+		push @loop, {
+         rel_path => $rel_path,
+         filename => $filename,
+         closerow => $closerow,
+      };
+	}
+   return \@loop;
+}
+
+
+
+
+
+sub thumbnail { # runmode
+	my $self = shift; 
+
+   my $rel = $self->query->param('rel_path')
+      or debug('no rel')
+      and return;
+
+   $self->set_abs_image( $self->abs_document_root.'/'.$rel );
+  
+   #$self->get_abs_image('rel_path') or return;      
+   $self->abs_thumbnail or return;    
+   $self->thumbnail_header_add;
+
+   $self->stream_file( $self->abs_thumbnail ) 
+      or warn("thumbnail runmode: could not stream thumb ".$self->abs_thumbnail);
+   #return 1;
+}
+
+
+
+
+
+
+sub view { # runmode
+	my $self = shift;
+   if ($self->cwr->is_dir){ 
+      return $self->forward('browse');
+   }
+
+   my $default = q{
+      <p><a href="?rm=browse&rel_path=<TMPL_VAR REL_BACK>">back</a></p>
+      <h1><TMPL_VAR REL_PATH></h1>
+      <p><img src="?rm=thumbnail&rel_path=<TMPL_VAR REL_PATH>&thumbnail_restriction=350x350"></p>
+      <p><a href="?rm=view_full">full size</a> | <a href="?rm=view_full">download</a></p>
+   };  
+
+   my $tmpl = get_tmpl('view.html',\$default);
+
+	$tmpl->param(
+	   rel_path => '/'.$self->cwr->rel_path,
+      rel_back => $self->_rel_back,
+   );
+
+   my $t = $self->tmpl_outer;
+   $t->param( BODY => $tmpl->output );   
+	return $t->output;
+}
+
+
+
+sub view_full { # runmode
+	my $self = shift;
+   if ($self->cwr->is_dir){ 
+      return $self->forward('browse');
+   }
+
+   my $default = q{<a href="<TMPL_VAR REL_BACK>" title="back"><img src="?rm=download"></a>};  
+
+   my $tmpl = get_tmpl('view.html',\$default);
+
+	$tmpl->param(
+	   rel_path => '/'.$self->cwr->rel_path,
+      rel_back => '?rm=view',
+   );
+
+   my $t = $self->tmpl_outer;
+   $t->param( BODY => $tmpl->output );   
+	return $t->output;
+}
+
+
+
+sub download {
+   my $self = shift;
+   
+   my $abs_path = $self->session->param('abs_path')
+      or die('no file chosen');
+   
+   -f $abs_path or die('not file');
+
+   my $filename = $abs_path;
+   $filename=~s/^.+\/+//;
+
+   require File::Type;
+   my $m = File::Type->new;
+   my $mime = $m->mime_type($abs_path);
+
+   $self->header_add(
+      '-type' => $mime,
+      '-attachment' => $filename
+    );
+  
+   if ( $self->stream_file( $abs_path ) ){
+      return
+   }
+   die("could not stream file ".$abs_path);
+}
+
+
+# support subs
+
+
+
+sub tmpl_outer {
+   my $self = shift;
+
+   my $default = q{
+   <html>
+   <body>
+   <div>
+   <TMPL_LOOP FEEDBACK>
+   <p><small><TMPL_VAR FEEDBACK></small</p>
+   </TMPL_LOOP>
+   </div>
+   
+   <div>
+   <TMPL_VAR BODY>
+   </div>
+   </body>
+   </html>};
+
+   my $tmpl = get_tmpl('main.html',\$default);
+   
+   $tmpl->param( FEEDBACK => $self->get_feedback_prepped );
+   return $tmpl;
+}
+
+
+
+
+sub _show_parent_link {
+   my $self = shift;
+   return ( $self->cwr->is_DOCUMENT_ROOT ? 0 : 1 );
+}
+
+
+
+
+
+sub cwr {
+	my $self = shift;
+
+	unless( $self->{cwr} ){
+      my $abs = $self->abs_path;
+
+      my $f = File::PathInfo::Ext->new( $abs );
+      unless( $f ){
+         $self->session->delete;
+         die("not on disk $abs");
+      }
+      $f->DOCUMENT_ROOT_set($self->abs_document_root);
+      $self->{cwr} = $f;
+   }
+         
+	return $self->{cwr};
+}
+sub abs_path {
+   my $self = shift;
+   
+   my $abs;
+
+   # regardless, we want it in the session
+   if( $abs = $self->_abs_from_query ){
+      # to session
+      $self->session->param(abs_path => $abs);
+   }
+   else { 
+      $abs = $self->_abs_from_session;
+   }
+   return $abs;
+}
+sub _abs_from_query {
+   my $self = shift;
+   my $rel = $self->query->param('rel_path');
+   defined $rel or debug('nothing in rel_path') and return;
+   debug('got rel from q');
+   if ( defined $rel and $rel eq ''  ){ # if def by empty string.. reset
+      debug('empty string');
+         return $self->abs_document_root;
+   }
+   debug("had $rel");
+   return Cwd::abs_path( $self->abs_document_root . '/'. $rel ); # TODO make sure this is within docroot
+}
+sub _abs_from_session {
+   my $self = shift;
+   $self->session->param('abs_path') 
+      or $self->session->param( 'abs_path' => $self->abs_document_root );
+      debug('session.. '.$self->session->param('abs_path'));
+   return $self->session->param('abs_path');
+}
+
+
+
+
+
+
+
+*_abs_path_default = \&abs_document_root;
+sub abs_document_root {
+   my $self = shift;
+   unless( $self->{abs_document_root_resolved} ){
+      my $a = $self->param( 'abs_document_root' ) or croak('missing abs_document_root param to constructor');
+      require Cwd;
+      my $r = Cwd::abs_path($a) or die("can't resolve '$a' to path");
+      $self->{abs_document_root_resolved} = $r;
+   }
+   return $self->{abs_document_root_resolved};
+}
+
+sub _rel_path_default {
+   return '/';
+}
+
+
+
+
+# PAGER
+
+sub pager {
+	my $self = shift;
+	$self->cwr->is_dir or croak('why call paging(), this is not a dir.');
+	unless($self->{pager}){
+	
+		$self->{pager} = new Data::Page(
+
+         $self->cwr->lsf_count, 
+         $self->user_pref( entries_per_page => 10 ), 
+         $self->user_pref( current_page => 1 )
+      );			
+	}
+	return $self->{pager};
+}
+
+sub user_pref {
+   my ( $self, $param_name, $default ) = @_;
+   
+   my $val = $self->query->param($param_name);
+   if( defined $val and $val eq '' ){
+      $self->session->param( $param_name => $default );
+   }
+   
+   elsif( $val ){
+      $self->session->param( $param_name => $val );
+   }
+
+   return $self->session->param($param_name);
+}
+
+   
+
+   
+
+
+1;
+
+__END__
 
 
 
@@ -71,171 +470,8 @@ If you don't have root access, you will need to know how to use cpan command lin
 
 =cut
 
-sub browse : Runmode {
-	my $self = shift;
-
-   $self->_set_tmpl_default(q{
-	<TMPL_IF CURRENT_PAGE>
-	<div>
-	<p><TMPL_IF PREVIOUS_PAGE><a href="?rm=browse&current_page=<TMPL_VAR PREVIOUS_PAGE>">previous page</a> : </TMPL_IF>
-	<TMPL_IF CURRENT_PAGE>Page <TMPL_VAR CURRENT_PAGE></TMPL_IF>
-	<TMPL_IF NEXT_PAGE> : <a href="?rm=browse&current_page=<TMPL_VAR NEXT_PAGE>">next page</a></TMPL_IF>
-	</p>
-	<p>
-	<a href="?entries_per_page=5">[5pp]</a> : 
-	<a href="?entries_per_page=10">[10pp]</a> : 
-	<a href="?entries_per_page=25">[25pp]</a> 
-	</p>
-	</div>
-	</TMPL_IF>	
-	
-	<div>	
-	<table cellspacing="0" cellpadding="4" width="100%">
-	<tr>
-	<TMPL_LOOP NAME="LS"> <td><a href="?rm=view&rel_path=<TMPL_VAR REL_PATH>"><img src="?rm=thumbnail&rel_path=<TMPL_VAR REL_PATH>"></a></td>
-	<TMPL_IF CLOSEROW></tr>
-	<tr>
-	</TMPL_IF>
-	</TMPL_LOOP>
-	</tr></table>
-	
-	<div>
-	<h5>Directories</h5>
-	<ul>
-	<TMPL_IF REL_BACK><li><a href="?rm=browse&rel_path=<TMPL_VAR REL_BACK>">Parent Directory</a></li></TMPL_IF>
-	<TMPL_LOOP NAME="LSD">
-	<li><a href="?rm=browse&rel_path=<TMPL_VAR REL_PATH>"><TMPL_VAR FILENAME></a></li>
-	</TMPL_LOOP>
-	</ul>
-	</div>});
 
 
-	
-	my @entries = $self->pager->splice($self->lsfa);
-
-	my $row = 3; my $cell=0;
-	my $loop=[]; 
-	for (@entries){
-		my $abs_path = $_;
-		
-		$cell++;
-		
-		my $rel_path = $abs_path; $rel_path=~s/^$ENV{DOCUMENT_ROOT}//;
-		my $filename = $rel_path; $filename=~s/^.*\///;
-		
-		my $data ={
-			rel_path => $rel_path,
-			filename => $filename,
-		};	
-
-		if ($cell == $row){
-			$data->{closerow} = 1;
-			$cell=0;
-		}
-
-
-		push @$loop, $data;
-		
-	}
-
-
-	$row = 3; $cell=0;
-	my $loopd=[]; 
-	for (@{$self->cwr->lsda}){
-		my $abs_path = $_;
-		
-		$cell++;
-		
-		my $rel_path = $abs_path; $rel_path=~s/^$ENV{DOCUMENT_ROOT}//;
-		my $filename = $rel_path; $filename=~s/^.*\///;
-		
-		my $data ={
-			rel_path => $rel_path,
-			filename => $filename,
-		};	
-
-		if ($cell == $row){
-			$data->{closerow} = 1;
-			$cell=0;
-		}
-
-		push @$loopd, $data;
-		
-	}
-
-
-	$self->_set_vars( 
-      LS => $loop,
-	   LSD => $loopd,
-   );
-
-	if ( $self->pager->last_page > 1 ) { # if we need paging.
-   
-		$self->_set_vars( 
-         ENTRIES_PER_PAGE=> $self->pager->entries_per_page,
-		   PREVIOUS_PAGE =>	$self->pager->previous_page,
-         CURRENT_PAGE =>		$self->pager->current_page,
-		   NEXT_PAGE =>			$self->pager->next_page,	
-      );
-      
-	 #    debug( sprintf "perpage[%s] prev [%s] curr [%s] next[%s]\n", $self->pager->entries_per_page, $self->pager->previous_page, $self->pager->current_page, $self->pager->next_page );
-	   $self->_debug_vars if DEBUG;		
-	}	
-
-	$self->_set_vars( rel_path => '/'.$self->cwr->rel_path );
-
-	unless( $self->cwr->is_DOCUMENT_ROOT ){ # TODO this could be better, should lock into gallery space.. ??
-		$self->_set_vars( rel_back => '/'.$self->cwr->rel_loc ); 
-	
-	}
-	
-	return $self->tmpl_output;
-}
-
-
-
-sub view : Runmode {
-	my $self = shift;
-
-   $self->_set_tmpl_default(q{
-      <p><a href="<TMPL_VAR REL_BACK>">back</a></p>
-      <h1><TMPL_VAR REL_PATH></h1>
-      <p><img src="?rm=thumbnail&rel_path=<TMPL_VAR REL_PATH>&thumbnail_restriction=350x350"></p>
-      <p><a href="<TMPL_VAR REL_PATH>">full view</p>      
-   });  
-
-	$self->_set_vars(
-	   rel_path => '/'.$self->cwr->rel_path,
-      rel_back => '?rm=browse&rel_path=/'.$self->cwr->rel_loc,
-   );
-   
-	return $self->tmpl_output;
-}
-
-sub CGI::Application::Plugin::TmplInerOuter::tmpl_output {
-   my $self = shift;
-   $self->_set_tmpl_default(q{
-   <html>
-   <body>
-   <div>
-   <TMPL_LOOP FEEDBACK>
-   <p><small><TMPL_VAR FEEDBACK></small</p>
-   </TMPL_LOOP>
-   </div>
-   
-   <div>
-   <TMPL_VAR BODY>
-   </div>
-   </body>
-   </html>},'main.html');
-
-   
-   $self->_set_vars( FEEDBACK => $self->get_feedback_prepped );
-   
-   $self->_feed_vars_all;
-   $self->_feed_merge;
-   return $self->_tmpl_outer->output;
-}
 
 =head1 LOOK AND FEEL
 
@@ -349,31 +585,6 @@ When you start your app:
    );
    $g->run;
 
-
-
-
-=cut
-
-
-
-
-
-sub error : Runmode {}
-
-
-
-
-sub thumbnail : Runmode {
-	my $self = shift; 
-  
-   $self->get_abs_image('rel_path') or return;      
-   $self->abs_thumbnail or return;    
-   $self->thumbnail_header_add;
-
-   $self->stream_file( $self->abs_thumbnail ) or warn("thumbnail runmode: could not stream thumb ".$self->abs_thumbnail);
-   return;
-}
-
 =head2 browse()
 
 view gallery thumbs
@@ -386,6 +597,8 @@ view a single image
 
 needs in query string= ?rm=thumbnail&rel_path=/gallery/1.jpg&restriction=40x40
 Please see CGI::Application::Plugin::Thumbnail
+
+
 
 
 
@@ -409,71 +622,7 @@ Shown are the default parameters.
 
 
 
-
-sub cwr {
-	my $self = shift;
-
-	unless( defined $self->{cwr} and $self->{cwr} ){	
-
-   
-         $self->_cwr_from_query or          
-         $self->_cwr_from_session or 
-         $self->_cwr_from_default or
-            confess('cant even set default gallery path');  
-
-      if ($self->get_current_runmode eq 'browse' and $self->cwr->is_file){
-          $self->_cwr_set_via_rel($self->cwr->rel_loc) or
-            $self->_cwr_from_from_default or confess('cant set default');
-      }
-
-	}
-	return $self->{cwr};
-}
-
-
-sub _cwr_from_query {
-   my $self = shift;
-   my $rel = $self->query->param('rel_path');
-   defined $rel or return 0;
-
-   $self->_cwr_set_via_rel($rel) or return;
-   $self->session->param( '_rel_path' => $self->cwr->rel_path );      
-   return 1;   
-}
-
-sub _cwr_from_session {
-   my $self = shift;
-   my $rel = $self->session->param('_rel_path');
-   defined $rel or return;  
-   $self->_cwr_set_via_rel($rel) and return 1;
-   
-   # failed.. clear session 
-   $self->session->clear('_rel_path');
-   return 0;   
-}
-
-sub _cwr_from_default {
-	my $self = shift;
-   my $rel = $self->param('rel_path_default'); 
-   $rel ||= '/';
-   
-   $self->_cwr_set_via_rel($rel) or return 0;
-   return 1;
-}
-
-sub _cwr_set_via_rel {
-   my ($self, $rel) = @_; defined $rel or return;
-   my $cwr = new File::PathInfo::Ext( $ENV{DOCUMENT_ROOT}.'/'. $rel ) or return 0;
-   $self->{cwr} = $cwr;
-   return 1;
-   
-}
-
-
-
 =for later
-
-
 sub _gallery_docroot {
    my $self = shift;
    if ( defined $self->param('rel_path_default') and $self->param('rel_path_default') ){
@@ -482,99 +631,7 @@ sub _gallery_docroot {
    
    return $ENV{DOCUMENT_ROOT};
 }
-
 =cut
-
-
-sub lsfa {
-	my $self = shift;
-	unless( $self->{lsfa} ){
-		my @ls = grep { /[^\/]+\.jpe?g$|[^\/]+\.png$/i } @{$self->cwr->lsfa};
-		$self->{lsfa} = \@ls;
-	}
-	return $self->{lsfa};
-}
-
-sub entries_total {
-	my $self = shift;
-	$self->{entries_total} ||= scalar @{$self->lsfa}; # dirs too???
-	return $self->{entries_total};
-}
-
-
-sub pager {
-	my $self = shift;
-	$self->cwr->is_dir or croak('why call paging(), this is not a dir.');
-	unless($self->{pager}){
-	
-		$self->{pager} = new Data::Page( $self->entries_total, $self->_entries_per_page, $self->_current_page );	
-
-		if ($self->_current_page > $self->{pager}->last_page){
-			$self->{pager}->current_page($self->{pager}->last_page);
-		} 
-		$self->session->param( current_page => $self->{pager}->current_page );
-		
-	}
-	return $self->{pager};
-}
-
-sub _entries_per_page {
-	my $self = shift;
-
-#	unless( $self->{entries_per_page} ){
-	
-		$self->param('entries_per_page_default') or $self->param('entries_per_page_default', 10); # optionally set via constructor	
-		$self->param('entries_per_page_max') or $self->param('entries_per_page_max', 100); # optionally set via constructor
-		$self->param('entries_per_page_min') or $self->param('entries_per_page_min', 4); # optionally set via constructor
-	
-		my $perpage;
-		
-		if ( $self->query->param('entries_per_page') ){
-			$perpage = $self->query->param('entries_per_page');
-		}
-		elsif ( $self->session->param('entries_per_page') ){
-			$perpage = $self->session->param('entries_per_page');
-		}
-		else {
-			$perpage = $self->param('entries_per_page_default');
-		}
-	
-		$perpage=~/^\d+$/ or $perpage = $self->{entries_per_page_default}; 
-		$perpage <= $self->param('entries_per_page_max') or $perpage = $self->param('entries_per_page_max');
-		$perpage >= $self->param('entries_per_page_min') or $perpage = $self->param('entries_per_page_min');
-			
-		$self->session->param( entries_per_page => $perpage ); 
-		
-		$self->{entries_per_page} = $perpage;
-#	}
-	return $self->{entries_per_page};
-}
-
-sub _current_page { # ?
-	my $self = shift;
-
-#	unless( $self->{current_page} ){
-		
-		my $page;	
-		
-		if ( $self->query->param('current_page') ){
-			$page = $self->query->param('current_page');
-		}
-		elsif ( $self->session->param('current_page') ){
-			$page = $self->session->param('current_page');
-		}
-		else {
-			$page = 1;
-		}
-		
-		$page=~/^\d+$/ or $page = 1;
-		$page ||= 1;
-		
-		# set the page in the pager????
-		$self->{current_page} = $page;
-#	}
-	return $self->{current_page};
-}
 
 
 =head2 entries_total()
@@ -617,5 +674,3 @@ Leo Charre leocharre at cpan dot org
 
 =cut
 
-
-1;
