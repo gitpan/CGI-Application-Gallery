@@ -5,6 +5,7 @@ cgi-bin/browse.html
 cgi-bin/gallery.cgi
 cgi-bin/view.html
 lib/CGI/Application/Gallery.pm
+lib/CGI/Application/Gallery.pod
 t/0.t
 t/1_with_thumbnail_rm_interactive_only.pl
 t/99.cleanup.pl

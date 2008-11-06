@@ -1,3 +1,12 @@
+2008-11-06 13:12  cvs
+
+	* lib/CGI/Application/Gallery.pod: moved doc to own pod file
+
+2008-11-06 13:11  cvs
+
+	* MANIFEST, lib/CGI/Application/Gallery.pm: made some changes to
+	  default layout, it's nicer
+
 2007-08-27 09:13  cvs
 
 	* MANIFEST, x_installwebfiles.PL, cgi-bin/gallery.cgi,
